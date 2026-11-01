@@ -44,6 +44,7 @@ fn init_logger(verbose: u8, quiet: bool) {
     };
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(std::io::stderr)
         .try_init();
 }
 

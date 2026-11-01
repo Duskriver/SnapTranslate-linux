@@ -1,9 +1,9 @@
 //! Command-line interface definitions and subcommand handlers for SnapTranslate-linux.
 
-use clap::{Args, Parser, Subcommand};
-use std::io::{self, IsTerminal, Write};
 use crate::config::{get_config_path, load_config, save_config};
 use crate::keyring::{delete_api_key, get_api_key, get_credentials_path, set_api_key};
+use clap::{Args, Parser, Subcommand};
+use std::io::{self, IsTerminal, Write};
 
 pub use crate::keyring::mask_api_key;
 
@@ -136,7 +136,10 @@ pub struct ConfigDeleteKeyArgs {
 
 /// Execute configuration commands completely headlessly without GUI initialization.
 pub fn handle_config_command(args: ConfigArgs) -> Result<(), Box<dyn std::error::Error>> {
-    match args.action.unwrap_or(ConfigAction::Get(ConfigGetArgs::default())) {
+    match args
+        .action
+        .unwrap_or(ConfigAction::Get(ConfigGetArgs::default()))
+    {
         ConfigAction::Get(get_args) => handle_config_get(get_args),
         ConfigAction::SetKey(key_args) => handle_config_set_key(key_args),
         ConfigAction::SetLanguage(lang_args) => handle_config_set_language(lang_args),
@@ -147,8 +150,24 @@ pub fn handle_config_command(args: ConfigArgs) -> Result<(), Box<dyn std::error:
     }
 }
 
+/// Loads configuration from disk, preserving existing settings if present,
+/// or returning the default configuration if the configuration file does not exist.
+/// If the configuration file exists but cannot be read or parsed, returns an explicit error
+/// to protect user configuration from being silently overwritten.
+fn load_config_or_err() -> Result<crate::config::AppConfig, Box<dyn std::error::Error>> {
+    load_config().map_err(|e| {
+        format!(
+            "Failed to load configuration file '{}': {}. \
+             Please repair or remove the corrupted configuration file before modifying settings.",
+            get_config_path().display(),
+            e
+        )
+        .into()
+    })
+}
+
 fn handle_config_get(args: ConfigGetArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = load_config().unwrap_or_default();
+    let cfg = load_config_or_err()?;
     let maybe_key = get_api_key().ok().flatten();
 
     if args.json {
@@ -204,13 +223,15 @@ fn handle_config_set_key(args: ConfigSetKeyArgs) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-fn handle_config_set_language(args: ConfigSetLanguageArgs) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_config_set_language(
+    args: ConfigSetLanguageArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     let lang = args.language.trim();
     if lang.is_empty() {
         eprintln!("Error: Target language cannot be empty.");
         std::process::exit(1);
     }
-    let mut cfg = load_config().unwrap_or_default();
+    let mut cfg = load_config_or_err()?;
     cfg.target_language = lang.to_string();
     save_config(&cfg)?;
     println!("Target language updated to '{}'.", cfg.target_language);
@@ -223,7 +244,7 @@ fn handle_config_set_model(args: ConfigSetModelArgs) -> Result<(), Box<dyn std::
         eprintln!("Error: Model cannot be empty.");
         std::process::exit(1);
     }
-    let mut cfg = load_config().unwrap_or_default();
+    let mut cfg = load_config_or_err()?;
     cfg.model = model.to_string();
     save_config(&cfg)?;
     println!("Model updated to '{}'.", cfg.model);
@@ -236,7 +257,7 @@ fn handle_config_set_url(args: ConfigSetUrlArgs) -> Result<(), Box<dyn std::erro
         eprintln!("Error: API base URL cannot be empty.");
         std::process::exit(1);
     }
-    let mut cfg = load_config().unwrap_or_default();
+    let mut cfg = load_config_or_err()?;
     cfg.api_base_url = url.to_string();
     save_config(&cfg)?;
     println!("API base URL updated to '{}'.", cfg.api_base_url);

@@ -3,7 +3,7 @@ use snaptranslate_linux::config::{
     DEFAULT_TARGET_LANGUAGE,
 };
 use snaptranslate_linux::keyring::{
-    mask_api_key, CredentialStorage, FallbackCredentials, KeyringStore,
+    ensure_file_mode_0600, mask_api_key, CredentialStorage, FallbackCredentials, KeyringStore,
 };
 use std::os::unix::fs::PermissionsExt;
 use tempfile::tempdir;
@@ -88,25 +88,63 @@ fn test_zero_plaintext_leakage_in_debug() {
 fn test_fallback_file_posix_permissions() {
     let dir = tempdir().expect("Failed to create tempdir");
     let fallback_path = dir.path().join("sub").join("credentials.toml");
-
-    let _store = KeyringStore::with_details(
-        "snaptranslate_test_nonexistent",
-        "deepseek-api-key",
-        fallback_path.clone(),
-    );
+    std::fs::create_dir_all(fallback_path.parent().unwrap()).unwrap();
 
     let test_key = "sk-test-secret-12345678";
     let toml_str = format!("deepseek_api_key = \"{}\"\n", test_key);
-    std::fs::create_dir_all(fallback_path.parent().unwrap()).unwrap();
     std::fs::write(&fallback_path, toml_str).unwrap();
 
-    let mut perms = std::fs::metadata(&fallback_path).unwrap().permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(&fallback_path, perms).unwrap();
+    // 1. Intentionally apply insecure file permissions: 0o644 (world/group-readable)
+    let mut insecure_perms = std::fs::metadata(&fallback_path).unwrap().permissions();
+    insecure_perms.set_mode(0o644);
+    std::fs::set_permissions(&fallback_path, insecure_perms).unwrap();
 
-    let meta = std::fs::metadata(&fallback_path).unwrap();
-    let mode = meta.permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "Fallback file permissions must be 0600");
+    let initial_mode = std::fs::metadata(&fallback_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        initial_mode, 0o644,
+        "Test precondition failed: file must initially have insecure mode 0644"
+    );
+
+    // 2. Invoke the authentic codebase function under test: ensure_file_mode_0600
+    ensure_file_mode_0600(&fallback_path);
+
+    let corrected_mode = std::fs::metadata(&fallback_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        corrected_mode, 0o600,
+        "snaptranslate_linux::keyring::ensure_file_mode_0600 must correct permissions to 0600"
+    );
+
+    // 3. Re-tamper permissions to 0o666 (world-writable) and verify end-to-end integration:
+    // Calling KeyringStore fallback read must automatically trigger permission remediation
+    let mut insecure_perms_666 = std::fs::metadata(&fallback_path).unwrap().permissions();
+    insecure_perms_666.set_mode(0o666);
+    std::fs::set_permissions(&fallback_path, insecure_perms_666).unwrap();
+
+    let store = KeyringStore::with_details(
+        "snaptranslate_test_nonexistent_bus_permission_check",
+        "deepseek-api-key",
+        fallback_path.clone(),
+    );
+    let loaded_key = store.get_api_key().expect("Failed to read fallback key");
+    assert_eq!(loaded_key.as_deref(), Some(test_key));
+
+    let end_to_end_mode = std::fs::metadata(&fallback_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        end_to_end_mode, 0o600,
+        "KeyringStore::get_api_key must automatically audit and enforce 0600 permissions upon reading fallback"
+    );
 }
 
 #[test]

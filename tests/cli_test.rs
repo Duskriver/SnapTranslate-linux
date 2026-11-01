@@ -14,7 +14,8 @@ fn test_clap_grammar_debug_assert() {
 
 #[test]
 fn test_root_default_parsing() {
-    let cli = Cli::try_parse_from(["snaptranslate-linux"]).expect("Default root parse should succeed");
+    let cli =
+        Cli::try_parse_from(["snaptranslate-linux"]).expect("Default root parse should succeed");
     assert!(cli.command.is_none());
     assert_eq!(cli.verbose, 0);
     assert!(!cli.quiet);
@@ -22,7 +23,8 @@ fn test_root_default_parsing() {
 
 #[test]
 fn test_capture_parsing_default() {
-    let cli = Cli::try_parse_from(["snaptranslate-linux", "capture"]).expect("Capture parse should succeed");
+    let cli = Cli::try_parse_from(["snaptranslate-linux", "capture"])
+        .expect("Capture parse should succeed");
     match cli.command {
         Some(Commands::Capture(args)) => {
             assert_eq!(args.target_language, None);
@@ -105,7 +107,13 @@ fn test_config_set_key_parsing() {
 #[test]
 fn test_security_invariant_no_key_flag() {
     // Adversarial verification: ensuring passing --key or -k is REJECTED by the CLI parser.
-    let res1 = Cli::try_parse_from(["snaptranslate-linux", "config", "set-key", "--key", "sk-secret123"]);
+    let res1 = Cli::try_parse_from([
+        "snaptranslate-linux",
+        "config",
+        "set-key",
+        "--key",
+        "sk-secret123",
+    ]);
     assert!(res1.is_err(), "Passing --key must be rejected by parser");
 
     let res2 = Cli::try_parse_from(["snaptranslate-linux", "config", "-k", "sk-secret123"]);
@@ -150,8 +158,13 @@ fn test_config_set_language_parsing() {
 
 #[test]
 fn test_config_set_model_parsing() {
-    let cli = Cli::try_parse_from(["snaptranslate-linux", "config", "set-model", "deepseek-chat"])
-        .expect("config set-model should parse");
+    let cli = Cli::try_parse_from([
+        "snaptranslate-linux",
+        "config",
+        "set-model",
+        "deepseek-chat",
+    ])
+    .expect("config set-model should parse");
     match cli.command {
         Some(Commands::Config(ConfigArgs {
             action: Some(ConfigAction::SetModel(args)),
@@ -212,18 +225,25 @@ fn test_config_delete_key_parsing() {
         })) => {
             assert_eq!(args, ConfigDeleteKeyArgs { force: true });
         }
-        other => panic!("Expected ConfigAction::DeleteKey with force=true, got {:?}", other),
+        other => panic!(
+            "Expected ConfigAction::DeleteKey with force=true, got {:?}",
+            other
+        ),
     }
 
-    let cli_force_long = Cli::try_parse_from(["snaptranslate-linux", "config", "delete-key", "--force"])
-        .expect("config delete-key --force should parse");
+    let cli_force_long =
+        Cli::try_parse_from(["snaptranslate-linux", "config", "delete-key", "--force"])
+            .expect("config delete-key --force should parse");
     match cli_force_long.command {
         Some(Commands::Config(ConfigArgs {
             action: Some(ConfigAction::DeleteKey(args)),
         })) => {
             assert_eq!(args, ConfigDeleteKeyArgs { force: true });
         }
-        other => panic!("Expected ConfigAction::DeleteKey with force=true, got {:?}", other),
+        other => panic!(
+            "Expected ConfigAction::DeleteKey with force=true, got {:?}",
+            other
+        ),
     }
 }
 

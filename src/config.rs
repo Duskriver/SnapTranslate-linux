@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_TARGET_LANGUAGE: &str = "zh-CN";
 pub const DEFAULT_API_BASE_URL: &str = "https://api.deepseek.com";
@@ -34,9 +36,7 @@ impl AppConfig {
             ));
         }
         if self.model.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "model cannot be empty".to_string(),
-            ));
+            return Err(ConfigError::Validation("model cannot be empty".to_string()));
         }
         let url = self.api_base_url.trim();
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -125,29 +125,59 @@ pub fn load_config_from_path(path: &Path) -> Result<AppConfig, ConfigError> {
     Ok(config)
 }
 
+static CONFIG_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let thread_id = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = CONFIG_TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    path.with_extension(format!("tmp.{pid}.{thread_id}.{nanos}.{seq}"))
+}
+
 /// Atomically saves configuration to the specified path.
 pub fn save_config_to_path(config: &AppConfig, path: &Path) -> Result<(), ConfigError> {
     config.validate()?;
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?;
+        }
     }
 
     let toml_str = toml::to_string_pretty(config)?;
-    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    let tmp_path = unique_temp_path(path);
 
-    std::fs::write(&tmp_path, toml_str).map_err(|e| ConfigError::Io {
-        path: tmp_path.clone(),
-        source: e,
-    })?;
+    let write_res = (|| -> Result<(), std::io::Error> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)?;
+        file.write_all(toml_str.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
 
-    std::fs::rename(&tmp_path, path).map_err(|e| ConfigError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    if let Err(e) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(ConfigError::Io {
+            path: path.to_path_buf(),
+            source: e,
+        });
+    }
 
     Ok(())
 }

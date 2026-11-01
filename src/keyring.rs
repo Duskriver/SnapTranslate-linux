@@ -1,5 +1,7 @@
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const KEYRING_SERVICE: &str = "snaptranslate";
 pub const KEYRING_ACCOUNT: &str = "deepseek-api-key";
@@ -8,11 +10,13 @@ pub const CREDENTIALS_FILE_NAME: &str = "credentials.toml";
 /// Helper function to mask API keys for safe logging or debug displays.
 /// e.g. "sk-1234567890abcdef" -> "sk-1...cdef"
 pub fn mask_api_key(key: &str) -> String {
-    let len = key.len();
-    if len <= 8 {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
         "********".to_string()
     } else {
-        format!("{}...{}", &key[..4], &key[len - 4..])
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{}...{}", prefix, suffix)
     }
 }
 
@@ -115,12 +119,11 @@ impl KeyringStore {
         #[cfg(unix)]
         ensure_file_mode_0600(&self.fallback_path);
 
-        let content = std::fs::read_to_string(&self.fallback_path).map_err(|e| {
-            KeyringError::Io {
+        let content =
+            std::fs::read_to_string(&self.fallback_path).map_err(|e| KeyringError::Io {
                 path: self.fallback_path.clone(),
                 source: e,
-            }
-        })?;
+            })?;
 
         let creds: FallbackCredentials =
             toml::from_str(&content).map_err(|e| KeyringError::Parse {
@@ -201,7 +204,9 @@ impl CredentialStorage for KeyringStore {
 
     fn set_api_key(&self, key: &str) -> Result<(), KeyringError> {
         let trimmed = key.trim();
-        let keyring_result = self.keyring_entry().and_then(|entry| entry.set_password(trimmed));
+        let keyring_result = self
+            .keyring_entry()
+            .and_then(|entry| entry.set_password(trimmed));
 
         match keyring_result {
             Ok(()) => {
@@ -293,13 +298,32 @@ pub fn ensure_file_mode_0600(file: &Path) {
 }
 
 #[cfg(unix)]
-fn write_secure_0600(path: &Path, content: &str) -> std::io::Result<()> {
+static KEYRING_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(unix)]
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let pid = std::process::id();
+    let thread_id = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect::<String>();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = KEYRING_TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    path.with_extension(format!("tmp.{pid}.{thread_id}.{nanos}.{seq}"))
+}
+
+#[cfg(unix)]
+pub fn write_secure_0600(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::fs::PermissionsExt;
 
-    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
-    {
+    let tmp_path = unique_temp_path(path);
+    let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -313,8 +337,13 @@ fn write_secure_0600(path: &Path, content: &str) -> std::io::Result<()> {
 
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
     }
 
-    std::fs::rename(&tmp_path, path)?;
-    Ok(())
+    result
 }

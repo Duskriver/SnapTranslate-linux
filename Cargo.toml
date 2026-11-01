@@ -1,0 +1,57 @@
+[package]
+name = "snaptranslate-linux"
+version = "0.1.0"
+edition = "2021"
+authors = ["SnapTranslate Team"]
+description = "Native Linux screenshot translation desktop app written in Rust and GTK4/libadwaita"
+
+[lib]
+name = "snaptranslate_linux"
+path = "src/lib.rs"
+
+[[bin]]
+name = "snaptranslate-linux"
+path = "src/main.rs"
+
+[dependencies]
+# CLI Parsing (R5, F5)
+clap = { version = "4.5", features = ["derive", "cargo"] }
+rpassword = "7.3"
+
+# Serialization & Config (R4, F2)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+dirs = "6.0"
+
+# Credential & Keyring Storage (R4, F3, F4)
+keyring = "4.2"
+
+# Concurrency & Asynchronous Runtime (F12)
+tokio = { version = "1", features = ["full"] }
+
+# HTTP & Streaming API Client (R2, F9, F10)
+reqwest = { version = "0.12", features = ["stream", "json"] }
+
+# Desktop GUI & Presentation (R3, F13, F14, F17)
+gtk4 = { version = "0.11" }
+libadwaita = { version = "0.9" }
+
+# Screen Capture via XDG Portal (R1, F6)
+ashpd = { version = "0.13", features = ["screenshot"] }
+
+# System Tray pure-DBus StatusNotifierItem (R3, F16)
+ksni = { version = "0.3" }
+
+# Markdown Rich-Text Streaming Renderer (R3, F15)
+pulldown-cmark = { version = "0.13" }
+
+# Error Handling & Logging
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2.0"
+predicates = "3.1"

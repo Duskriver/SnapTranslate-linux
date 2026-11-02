@@ -7,7 +7,7 @@
 - 本地已构建 amd64 `.deb`，用私有 dpkg 根目录验证安装、升级、移除和 purge，保留用户设置与合成密钥。
 - 使用从安装包实际安装出的程序运行隔离 GTK 回归。
 - APT 模拟安装检查本机依赖；依赖版本由 `dpkg-shlibdeps` 分析实际 ELF 生成，不根据发行版名称猜测。
-- 当前本机环境为 Ubuntu 26.04 amd64。CI 配置为 Ubuntu 24.04 amd64/arm64，接入 GitHub 后须实际通过两个任务才能出发行草稿；本地测试不代替这两项 CI。
+- 本地验证环境为 Ubuntu 26.04 amd64。[Ubuntu 24.04 amd64 / arm64 CI](https://github.com/Duskriver/SnapTranslate-linux/actions/runs/41464015443) 已实际通过两个任务：各 174 项 Rust 测试、包安装 / 升级 / 移除 / purge，以及各 23 次本地 HTTP 请求的隔离 GTK 流程。原生 maim 框选使用生成的测试图，Portal 和快捷键的系统授权仍需在对应桌面验收。
 - 正式仓库为 `Duskriver/SnapTranslate-linux`，沿用 macOS 版本的 MIT 许可证；发行工作流仍要求 LICENSE 存在。公开 Release 以 GitHub 页面实际状态为准。
 
 ## 维护者生成安装包

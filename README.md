@@ -8,7 +8,7 @@
 
 ## 下载与安装（普通用户）
 
-**当前状态：本地安装包和发行工作流已准备，正式 GitHub 下载版本尚未发布。**
+**当前状态：v0.1.0 双架构安装包已通过 CI，正式 GitHub 下载版本尚未公开发布。**
 
 正式版本发布后，普通用户只需：
 
@@ -23,7 +23,7 @@
 
 请选择 `.deb` 附件。GitHub 自动生成的 **Source code (zip / tar.gz)** 是源码，不是运行安装包。普通用户不需要 Git、Rust、Cargo，也不需要执行 Python 安装脚本。
 
-发行工作流以 Ubuntu 24.04 为构建基线；其他 Debian 系发行版是否可安装由实际系统依赖决定。当前本机安装验证环境是 Ubuntu 26.04 amd64；Ubuntu 24.04 和 arm64 仍须通过对应 CI 后才发布。
+发行工作流以 Ubuntu 24.04 为构建基线；其他 Debian 系发行版是否可安装由实际系统依赖决定。本地 Ubuntu 26.04 amd64 及 [Ubuntu 24.04 amd64 / arm64 CI](https://github.com/Duskriver/SnapTranslate-linux/actions/runs/41464015443) 均已完成安装生命周期和隔离图形流程验证。
 
 没有图形安装器时，可在下载目录运行 `sudo apt install ./下载的文件.deb`，由 APT 处理依赖。
 
@@ -70,7 +70,7 @@
 
 在 Linux 桌面（如 GNOME / KDE / Sway / Hyprland）的 **系统设置 → 键盘 → 自定义快捷键** 中新增一条：
 - **名称**：`SnapTranslate 截屏翻译`
-- **命令**：`/usr/local/bin/snaptranslate-linux capture` （或你的二进制绝对路径）
+- **命令**：`/usr/bin/snaptranslate-linux capture` （或你的二进制绝对路径）
 - **快捷键**：例如 `Super + Shift + T` 或 `Alt + Shift + T`
 
 也可在应用设置的快捷键引导中点击「复制命令」，得到当前程序的完整路径；包含空格的路径也会正确引用。引导根据当前桌面提供配置步骤，并可打开受支持桌面的键盘设置。全局组合键由桌面管理，绑定时需处理系统提示的冲突。后续启动了 Portal 服务时可点击「重新检测系统快捷键」。

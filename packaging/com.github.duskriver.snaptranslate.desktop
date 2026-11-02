@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=SnapTranslate · 轻译
+GenericName=Screenshot Translator
+GenericName[zh_CN]=截屏翻译
+Comment=Select a screen region and translate its text
+Comment[zh_CN]=框选屏幕区域并翻译文字
+Exec=snaptranslate-linux
+Icon=com.github.duskriver.snaptranslate
+Terminal=false
+Categories=Utility;
+Keywords=translate;screenshot;翻译;截图;
+StartupWMClass=com.github.duskriver.snaptranslate
+Actions=Capture;
+
+[Desktop Action Capture]
+Name=截屏翻译
+Name[en]=Capture and Translate
+Exec=snaptranslate-linux capture

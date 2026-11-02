@@ -9,11 +9,11 @@
 pub mod fallback;
 pub mod portal;
 
+use async_trait::async_trait;
+use base64::Engine;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use async_trait::async_trait;
-use base64::Engine;
 
 pub use fallback::{
     detect_session_type, detect_session_type_from_env, is_binary_available,
@@ -28,6 +28,8 @@ pub const PNG_MAGIC_BYTES: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 /// Structured error type for the screen capture subsystem.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum CaptureError {
+    #[error("Screen capture permission was denied")]
+    PermissionDenied,
     #[error("Portal unavailable: {0}")]
     PortalUnavailable(String),
 
@@ -150,11 +152,19 @@ pub fn format_base64_data_uri(bytes: &[u8]) -> String {
 pub fn read_and_cleanup_temp_image<P: AsRef<Path>>(path: P) -> Result<CapturedImage, CaptureError> {
     let p = path.as_ref();
     let bytes = std::fs::read(p).map_err(|e| {
-        CaptureError::IoError(format!("Failed to read screenshot from '{}': {}", p.display(), e))
+        CaptureError::IoError(format!(
+            "Failed to read screenshot from '{}': {}",
+            p.display(),
+            e
+        ))
     })?;
 
     if let Err(e) = std::fs::remove_file(p) {
-        tracing::warn!("Failed to delete temporary screenshot file '{}': {}", p.display(), e);
+        tracing::warn!(
+            "Failed to delete temporary screenshot file '{}': {}",
+            p.display(),
+            e
+        );
     }
 
     CapturedImage::from_raw_png(bytes)
@@ -204,7 +214,10 @@ impl CompositeCapturer {
     }
 
     /// Constructs `CompositeCapturer` with explicit primary and fallback capturers.
-    pub fn with_capturers(primary: Box<dyn ScreenCapturer>, fallback: Box<dyn ScreenCapturer>) -> Self {
+    pub fn with_capturers(
+        primary: Box<dyn ScreenCapturer>,
+        fallback: Box<dyn ScreenCapturer>,
+    ) -> Self {
         Self { primary, fallback }
     }
 
@@ -241,7 +254,10 @@ impl ScreenCapturer for CompositeCapturer {
     async fn capture_region(&self) -> Result<Option<CapturedImage>, CaptureError> {
         match self.primary.capture_region().await {
             Ok(Some(img)) => {
-                tracing::info!("Screen capture succeeded with primary capturer ({})", self.primary.name());
+                tracing::info!(
+                    "Screen capture succeeded with primary capturer ({})",
+                    self.primary.name()
+                );
                 Ok(Some(img))
             }
             Ok(None) => {
@@ -344,7 +360,9 @@ impl ScreenCapturer for MockCapturer {
             MockOutcome::Failed(err) => Err(err.clone()),
             MockOutcome::Sequential(list) => {
                 if list.is_empty() {
-                    Err(CaptureError::BackendUnavailable("Mock sequence exhausted".into()))
+                    Err(CaptureError::BackendUnavailable(
+                        "Mock sequence exhausted".into(),
+                    ))
                 } else {
                     list.remove(0)
                 }

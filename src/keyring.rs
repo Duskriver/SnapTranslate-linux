@@ -224,17 +224,26 @@ impl CredentialStorage for KeyringStore {
     }
 
     fn delete_api_key(&self) -> Result<(), KeyringError> {
-        if let Ok(entry) = self.keyring_entry() {
-            // In keyring 4.2, the deletion method is delete_credential()
-            if let Err(e) = entry.delete_credential() {
-                if !matches!(e, keyring::Error::NoEntry) {
-                    tracing::warn!("System keyring delete_credential returned: {e}");
-                }
-            }
-        }
+        let result = self
+            .keyring_entry()
+            .and_then(|entry| entry.delete_credential());
+        finish_credential_deletion(result, self.fallback_path.exists(), || {
+            self.remove_fallback()
+        })
+    }
+}
 
-        self.remove_fallback()?;
-        Ok(())
+fn finish_credential_deletion(
+    keyring_result: Result<(), keyring::Error>,
+    has_fallback: bool,
+    remove_fallback: impl FnOnce() -> Result<(), KeyringError>,
+) -> Result<(), KeyringError> {
+    match keyring_result {
+        Ok(()) | Err(keyring::Error::NoEntry) => remove_fallback(),
+        // A system without Secret Service can still remove the file it uses as
+        // its credential store. Errors from an initialized keyring must surface.
+        Err(keyring::Error::NoDefaultStore) if has_fallback => remove_fallback(),
+        Err(error) => Err(KeyringError::Keyring(error)),
     }
 }
 
@@ -346,4 +355,53 @@ pub fn write_secure_0600(path: &Path, content: &str) -> std::io::Result<()> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn locked_keyring_deletion_never_reports_success() {
+        let file_deleted = Cell::new(false);
+        let result = finish_credential_deletion(
+            Err(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "locked"),
+            ))),
+            true,
+            || {
+                file_deleted.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!file_deleted.get());
+    }
+
+    #[test]
+    fn file_only_store_can_be_deleted_without_secret_service() {
+        let deleted = Cell::new(false);
+        finish_credential_deletion(Err(keyring::Error::NoDefaultStore), true, || {
+            deleted.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(deleted.get());
+        assert!(
+            finish_credential_deletion(Err(keyring::Error::NoDefaultStore), false, || Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fallback_removal_error_is_returned_after_system_deletion() {
+        let result = finish_credential_deletion(Ok(()), true, || {
+            Err(KeyringError::Io {
+                path: PathBuf::from("isolated-credentials.toml"),
+                source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "read-only"),
+            })
+        });
+        assert!(matches!(result, Err(KeyringError::Io { .. })));
+    }
 }

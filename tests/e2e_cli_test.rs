@@ -7,7 +7,7 @@
 //! - Tier 1: Error Handling & Argument Validation (F-ERR-01)
 //! - Tier 2: Boundary & Corner Cases (display env, whitespace, verbosity flags)
 //! - Tier 3: CLI Subcommand Aliases & Help Consistency
-//! - Tier 4: Real-world Desktop Shortcut Invocation Simulation
+//! Real GTK / desktop shortcut flows are exercised by scripts/verify-gui-flow.py.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -43,17 +43,20 @@ impl CliTestEnv {
         cmd
     }
 
-    /// Spawns the binary with simulated X11 display session.
+    /// An unreachable X11 display must fail instead of pretending to capture.
     fn bin_x11(&self) -> Command {
         let mut cmd = self.bin();
-        cmd.env("DISPLAY", ":99");
+        cmd.env("DISPLAY", ":65535");
+        cmd.env("GDK_BACKEND", "x11");
         cmd
     }
 
-    /// Spawns the binary with simulated Wayland display session.
+    /// An isolated directory with no Wayland socket cannot connect to the host.
     fn bin_wayland(&self) -> Command {
         let mut cmd = self.bin();
         cmd.env("WAYLAND_DISPLAY", "wayland-1");
+        cmd.env("XDG_RUNTIME_DIR", self.temp_dir.path());
+        cmd.env("GDK_BACKEND", "wayland");
         cmd
     }
 }
@@ -283,31 +286,28 @@ fn test_subcommand_config_set_url_execution() {
 }
 
 #[test]
-fn test_subcommand_capture_invocation_with_display() {
+fn test_capture_with_unreachable_x11_display_fails() {
     let env = CliTestEnv::new();
     env.bin_x11()
         .arg("capture")
         .assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "Starting SnapTranslate-linux GUI mode...",
-        ))
-        .stdout(predicate::str::contains(
-            "Capture mode triggered with target language: None",
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Failed to initialize graphical display",
         ));
 }
 
 #[test]
-fn test_subcommand_capture_invocation_with_lang_flag() {
+fn test_capture_language_override_does_not_bypass_display_validation() {
     let env = CliTestEnv::new();
     env.bin_x11()
         .args(["capture", "--lang", "es"])
         .assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "Capture mode triggered with target language: Some(\"es\")",
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Failed to initialize graphical display",
         ));
 }
 
@@ -480,15 +480,15 @@ fn test_error_gui_missing_display_detected() {
 // ============================================================================
 
 #[test]
-fn test_boundary_wayland_display_accepted() {
+fn test_unreachable_wayland_display_reports_failure() {
     let env = CliTestEnv::new();
     env.bin_wayland()
         .arg("capture")
         .assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "Starting SnapTranslate-linux GUI mode...",
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Failed to initialize graphical display",
         ));
 }
 
@@ -595,36 +595,28 @@ fn test_help_subcommand_syntax_parity() {
 }
 
 // ============================================================================
-// Tier 4: Real-World Desktop Shortcut Invocation Simulation
+// A null D-Bus test sandbox must not short-circuit GUI startup as success.
 // ============================================================================
 
 #[test]
-fn test_scenario_shortcut_capture_invocation() {
+fn test_null_dbus_does_not_fake_success_for_gui_commands() {
     let env = CliTestEnv::new();
 
-    // User presses shortcut bound to: `snaptranslate-linux capture --lang zh-CN`
+    // No real display exists: these invocations must report startup failure.
     env.bin_x11()
         .args(["capture", "--lang", "zh-CN"])
         .assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "Starting SnapTranslate-linux GUI mode...",
-        ))
-        .stdout(predicate::str::contains(
-            "Capture mode triggered with target language: Some(\"zh-CN\")",
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Failed to initialize graphical display",
         ));
 
-    // User presses shortcut bound to: `snaptranslate-linux capture`
-    env.bin_wayland()
-        .args(["capture"])
+    env.bin_x11()
         .assert()
-        .success()
-        .code(0)
-        .stdout(predicate::str::contains(
-            "Starting SnapTranslate-linux GUI mode...",
-        ))
-        .stdout(predicate::str::contains(
-            "Capture mode triggered with target language: None",
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Failed to initialize graphical display",
         ));
 }

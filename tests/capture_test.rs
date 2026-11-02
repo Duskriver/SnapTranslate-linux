@@ -414,7 +414,7 @@ fn test_portal_error_classification() {
     let res_other = PortalCapturer::classify_ashpd_error::<()>(
         ashpd::desktop::ResponseError::Other.into(),
     );
-    assert_eq!(res_other, Ok(None));
+    assert!(matches!(res_other, Err(CaptureError::PortalError(_))));
 
     // Portal daemon unavailable
     let res_no_response = PortalCapturer::classify_ashpd_error::<()>(ashpd::Error::NoResponse);

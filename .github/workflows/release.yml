@@ -1,0 +1,112 @@
+name: Test and package Linux app
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  package:
+    name: Ubuntu 24.04 / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check release tag matches application version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, tomllib
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          if os.environ['REF_TYPE'] == 'tag':
+              assert os.environ['REF_NAME'] == 'v' + version, 'Tag must match Cargo.toml version'
+          PY
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libssl-dev dpkg-dev desktop-file-utils bubblewrap xvfb xauth dbus-daemon python3-gi python3-dbus gir1.2-atspi-2.0 gir1.2-gtk-3.0 gir1.2-gtk-4.0 at-spi2-core libxtst6 maim
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Run Rust tests
+        env:
+          DBUS_SESSION_BUS_ADDRESS: unix:path=/dev/null
+        run: cargo test --locked
+      - name: Build and package
+        run: |
+          cargo build --locked --release
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python3 scripts/package.py
+          cd dist
+          sha256sum -- *.deb > SHA256SUMS
+      - name: Verify packaged application and lifecycle
+        # Root is confined to a temporary dpkg database/root by the test script.
+        # It does not install into the runner's host system.
+        run: sudo /usr/bin/python3 scripts/verify-package.py --gui dist/*.deb
+      - name: Upload downloadable packages
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: snaptranslate-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release-draft:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verify distribution license is present
+        run: |
+          test -s LICENSE || { echo 'Add the project LICENSE before creating a public distribution draft.'; exit 1; }
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: snaptranslate-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and generate download instructions
+        run: |
+          cd dist
+          sha256sum -- *.deb > SHA256SUMS
+          for checksum in *.deb.sha256; do sha256sum -c "$checksum"; done
+          cd ..
+          cp packaging/RELEASE_NOTES.md release-notes.md
+      - name: Create reviewable release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > /tmp/snap-release-state; then
+            test "$(cat /tmp/snap-release-state)" = true || { echo 'Refusing to replace assets of an already-published release.'; exit 1; }
+            gh release upload "$RELEASE_TAG" dist/*.deb dist/SHA256SUMS dist/*.build.json --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "SnapTranslate $RELEASE_TAG" --notes-file release-notes.md dist/*.deb dist/SHA256SUMS dist/*.build.json
+          fi

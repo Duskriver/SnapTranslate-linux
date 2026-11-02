@@ -2,6 +2,9 @@
 name = "snaptranslate-linux"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/Duskriver/SnapTranslate-linux"
+homepage = "https://github.com/Duskriver/SnapTranslate-linux"
 authors = ["SnapTranslate Team"]
 description = "Native Linux screenshot translation desktop app written in Rust and GTK4/libadwaita"
 
@@ -39,7 +42,7 @@ gtk4 = { version = "0.11" }
 libadwaita = { version = "0.9" }
 
 # Screen Capture via XDG Portal (R1, F6)
-ashpd = { version = "0.13", features = ["screenshot"] }
+ashpd = { version = "0.13", features = ["screenshot", "global_shortcuts"] }
 
 # System Tray pure-DBus StatusNotifierItem (R3, F16)
 ksni = { version = "0.3" }

@@ -23,6 +23,49 @@ use super::{CaptureError, CapturedImage, ScreenCapturer};
 
 static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// Explicitly reap a cancelled selector. kill_on_drop alone can leave the child
+// in Tokio's orphan queue until another process or signal wakes that queue.
+struct ReapingChild(Option<tokio::process::Child>);
+impl Drop for ReapingChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.start_kill();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
+    }
+}
+#[async_trait]
+trait ReapedOutput {
+    async fn output_reaped(&mut self) -> std::io::Result<std::process::Output>;
+}
+#[async_trait]
+impl ReapedOutput for tokio::process::Command {
+    async fn output_reaped(&mut self) -> std::io::Result<std::process::Output> {
+        use tokio::io::AsyncReadExt;
+        let mut guard = ReapingChild(Some(self.spawn()?));
+        let child = guard.0.as_mut().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (status, _, _) = tokio::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        )?;
+        guard.0.take();
+        Ok(std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        })
+    }
+}
+
 /// Desktop session display protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionType {
@@ -51,10 +94,7 @@ where
         .trim()
         .to_string();
 
-    let display = get_env("DISPLAY")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let display = get_env("DISPLAY").unwrap_or_default().trim().to_string();
 
     // 1. Wayland has strict precedence over X11 (avoids the Xwayland trap)
     if session_type == "wayland" || !wayland_display.is_empty() {
@@ -159,14 +199,11 @@ impl TempScreenshotFile {
             let file_result = OpenOptions::new()
                 .write(true)
                 .create_new(true) // O_CREAT | O_EXCL
-                .mode(0o600)      // POSIX 0600
+                .mode(0o600) // POSIX 0600
                 .open(&path);
 
             #[cfg(not(unix))]
-            let file_result = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path);
+            let file_result = OpenOptions::new().write(true).create_new(true).open(&path);
 
             match file_result {
                 Ok(file) => {
@@ -272,11 +309,14 @@ impl WaylandCliCapturer {
 
         // 2. Interactive region selection with slurp
         let slurp_res = tokio::process::Command::new(&self.slurp_bin)
+            .kill_on_drop(true)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
+            .output_reaped()
             .await
-            .map_err(|e| CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.slurp_bin)))?;
+            .map_err(|e| {
+                CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.slurp_bin))
+            })?;
 
         if !slurp_res.status.success() {
             let stderr = String::from_utf8_lossy(&slurp_res.stderr);
@@ -289,7 +329,9 @@ impl WaylandCliCapturer {
             return Ok(None);
         }
 
-        let geometry = String::from_utf8_lossy(&slurp_res.stdout).trim().to_string();
+        let geometry = String::from_utf8_lossy(&slurp_res.stdout)
+            .trim()
+            .to_string();
         if geometry.is_empty() {
             tracing::info!("Slurp returned empty geometry; treating as canceled");
             return Ok(None);
@@ -311,14 +353,17 @@ impl WaylandCliCapturer {
 
         // 4. Capture screenshot via grim
         let grim_res = tokio::process::Command::new(&self.grim_bin)
+            .kill_on_drop(true)
             .arg("-g")
             .arg(&geometry)
             .arg(temp_file.path())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
+            .output_reaped()
             .await
-            .map_err(|e| CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.grim_bin)))?;
+            .map_err(|e| {
+                CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.grim_bin))
+            })?;
 
         if !grim_res.status.success() {
             let stderr = String::from_utf8_lossy(&grim_res.stderr);
@@ -393,13 +438,16 @@ impl X11CliCapturer {
 
         // 3. Execute maim -s <path>
         let maim_res = tokio::process::Command::new(&self.maim_bin)
+            .kill_on_drop(true)
             .arg("-s")
             .arg(temp_file.path())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .output()
+            .output_reaped()
             .await
-            .map_err(|e| CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.maim_bin)))?;
+            .map_err(|e| {
+                CaptureError::IoError(format!("Failed to spawn '{}': {e}", self.maim_bin))
+            })?;
 
         if !maim_res.status.success() {
             let stderr = String::from_utf8_lossy(&maim_res.stderr);
@@ -491,7 +539,8 @@ impl NativeFallbackCapturer {
                     self.x11_capturer.capture_region().await
                 } else {
                     Err(CaptureError::CommandNotFound(
-                        "Neither Wayland tools (grim/slurp) nor X11 tool (maim) found in PATH".into(),
+                        "Neither Wayland tools (grim/slurp) nor X11 tool (maim) found in PATH"
+                            .into(),
                     ))
                 }
             }

@@ -3,11 +3,16 @@
 //! Provides region and screen capture functionality using the FreeDesktop
 //! XDG Desktop Portal (`org.freedesktop.portal.Screenshot`) via `ashpd` 0.13.
 
-use std::path::{Path, PathBuf};
-use ashpd::desktop::screenshot::Screenshot;
 use ashpd::desktop::ResponseError;
+use ashpd::zbus::{
+    zvariant::{OwnedObjectPath, OwnedValue, Value},
+    Connection, Proxy,
+};
 use ashpd::PortalError;
 use async_trait::async_trait;
+use futures_util::StreamExt;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::{CaptureError, CapturedImage, ScreenCapturer, PNG_MAGIC_BYTES};
 
@@ -26,25 +31,88 @@ impl PortalCapturer {
     async fn capture_region_internal(&self) -> Result<Option<CapturedImage>, CaptureError> {
         tracing::info!("Initiating interactive screenshot capture via XDG Desktop Portal (ashpd)");
 
-        // Step 1: Dispatch interactive screenshot request to org.freedesktop.portal.Screenshot
-        let request_handle = match Screenshot::request()
-            .interactive(true)
-            .modal(true)
-            .send()
+        // Subscribe before Screenshot to avoid losing an immediate Response.
+        // Keep the request handle in a guard: dropping ashpd's send() future
+        // alone does not call Request.Close and can leave the selector open.
+        let connection = Connection::session().await.map_err(portal_bus_error)?;
+        let token = format!("snap_{}", gtk4::glib::uuid_string_random().replace('-', ""));
+        let sender = connection
+            .unique_name()
+            .ok_or_else(|| CaptureError::PortalUnavailable("No bus identity".into()))?
+            .as_str()
+            .trim_start_matches(':')
+            .replace('.', "_");
+        let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+        let mut guard = PendingRequest {
+            connection: connection.clone(),
+            path: path.clone(),
+            completed: false,
+        };
+        let request = Proxy::new_owned(
+            connection.clone(),
+            "org.freedesktop.portal.Desktop",
+            path,
+            "org.freedesktop.portal.Request",
+        )
+        .await
+        .map_err(portal_bus_error)?;
+        let mut responses = request
+            .receive_signal("Response")
             .await
-        {
-            Ok(handle) => handle,
-            Err(err) => return Self::classify_ashpd_error(err),
-        };
-
-        // Step 2: Await user interaction completion and fetch response
-        let screenshot = match request_handle.response() {
-            Ok(res) => res,
-            Err(err) => return Self::classify_ashpd_error(err),
-        };
-
-        let uri_str = screenshot.uri().as_str();
-        tracing::debug!(uri = %uri_str, "Portal screenshot request completed successfully");
+            .map_err(portal_bus_error)?;
+        let portal = Proxy::new(
+            &connection,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Screenshot",
+        )
+        .await
+        .map_err(portal_bus_error)?;
+        let options: HashMap<&str, Value<'_>> = HashMap::from([
+            ("handle_token", Value::from(token.as_str())),
+            ("interactive", Value::from(true)),
+            ("modal", Value::from(true)),
+        ]);
+        let actual: OwnedObjectPath = portal
+            .call("Screenshot", &("", options))
+            .await
+            .map_err(portal_bus_error)?;
+        // Legacy portals may return a different path. Replace the subscription.
+        if actual.as_str() != guard.path {
+            guard.path = actual.as_str().to_owned();
+            let actual_request = Proxy::new_owned(
+                connection.clone(),
+                "org.freedesktop.portal.Desktop",
+                actual,
+                "org.freedesktop.portal.Request",
+            )
+            .await
+            .map_err(portal_bus_error)?;
+            responses = actual_request
+                .receive_signal("Response")
+                .await
+                .map_err(portal_bus_error)?;
+        }
+        let response = responses
+            .next()
+            .await
+            .ok_or_else(|| CaptureError::PortalError("Screenshot response missing".into()))?;
+        let (status, results): (u32, HashMap<String, OwnedValue>) =
+            response.body().deserialize().map_err(portal_bus_error)?;
+        guard.completed = true;
+        match status {
+            1 => return Ok(None),
+            0 => {}
+            _ => {
+                return Err(CaptureError::PortalError(
+                    "Screenshot backend did not complete the request".into(),
+                ))
+            }
+        }
+        let uri_str = results
+            .get("uri")
+            .and_then(|v| <&str>::try_from(v).ok())
+            .ok_or_else(|| CaptureError::InvalidImage("Portal returned no image URI".into()))?;
 
         // Step 3: Extract file path from URI
         let file_path = parse_file_uri(uri_str)?;
@@ -73,7 +141,9 @@ impl PortalCapturer {
             }
             ashpd::Error::Response(ResponseError::Other) => {
                 tracing::info!("Portal screenshot interaction ended without capture (dismissed)");
-                Ok(None)
+                Err(CaptureError::PortalError(
+                    "Screenshot backend failed".into(),
+                ))
             }
             ashpd::Error::Portal(PortalError::Cancelled(_)) => {
                 tracing::info!("Portal backend reported user cancellation");
@@ -111,9 +181,7 @@ impl PortalCapturer {
             }
             ashpd::Error::Portal(PortalError::NotAllowed(msg)) => {
                 tracing::warn!(message = %msg, "Portal screenshot action not permitted");
-                Err(CaptureError::PortalUnavailable(format!(
-                    "Portal screenshot action not permitted by system policy: {msg}"
-                )))
+                Err(CaptureError::PermissionDenied)
             }
 
             // General or internal portal errors
@@ -142,6 +210,59 @@ impl ScreenCapturer for PortalCapturer {
     async fn capture_region(&self) -> Result<Option<CapturedImage>, CaptureError> {
         self.capture_region_internal().await
     }
+}
+
+struct PendingRequest {
+    connection: Connection,
+    path: String,
+    completed: bool,
+}
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        let connection = self.connection.clone();
+        let path = self.path.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Ok(proxy) = Proxy::new_owned(
+                    connection,
+                    "org.freedesktop.portal.Desktop",
+                    path,
+                    "org.freedesktop.portal.Request",
+                )
+                .await
+                {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        proxy.call::<_, _, ()>("Close", &()),
+                    )
+                    .await;
+                }
+            });
+        }
+    }
+}
+fn portal_bus_error(error: ashpd::zbus::Error) -> CaptureError {
+    if let ashpd::zbus::Error::MethodError(name, _, _) = &error {
+        if name.as_str().ends_with("NotAllowed") || name.as_str().ends_with("AccessDenied") {
+            return CaptureError::PermissionDenied;
+        }
+        if [
+            "ServiceUnknown",
+            "UnknownInterface",
+            "UnknownMethod",
+            "NameHasNoOwner",
+        ]
+        .iter()
+        .any(|s| name.as_str().ends_with(s))
+        {
+            return CaptureError::PortalUnavailable("Screenshot portal is unavailable".into());
+        }
+        return CaptureError::PortalError("Screenshot portal rejected the request".into());
+    }
+    CaptureError::PortalUnavailable("Cannot communicate with screenshot portal".into())
 }
 
 /// Parses a `file://` URI into an absolute `PathBuf`, handling percent-decoding.

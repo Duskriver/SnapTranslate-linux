@@ -431,14 +431,19 @@ image.savev(sys.argv[1], 'png', [], [])
 
     def replace_text(window, label, value, masked=False):
         node = wait_for(lambda: input_node(window, label), f"find input {label}")
+        # Focus and paste through GTK's real input path. Some older AT-SPI
+        # bridges report success for set_text_contents without updating Entry.
+        x_events(title=window.get_name())
         try:
-            changed = Atspi.EditableText.set_text_contents(node, value)
-        except Exception:
-            changed = False
-        if not changed:
-            clipboard.set(value)
+            Atspi.Component.scroll_to(node, Atspi.ScrollType.ANYWHERE)
+            focused = Atspi.Component.grab_focus(node)
+        except GLib.Error:
+            focused = False
+        if not focused:
             pointer(window, node)
-            x_events(title=window.get_name(), keys=[(0xffe3, "a"), (0xffe3, "v")])
+        clipboard.set(value)
+        settle()
+        x_events(title=window.get_name(), keys=[(0xffe3, "a"), (0xffe3, "v")])
         if masked:
             wait_for(lambda: Atspi.Text.get_character_count(node) > 0, f"masked input {label} receives fixture text")
         else:

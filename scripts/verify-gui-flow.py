@@ -296,6 +296,27 @@ def worker(root, binary, edge_only=False, ux_only=False, reading_only=False, rec
     processes.append(a11y)
     wait_for(lambda: bus.name_has_owner("org.a11y.Bus"), "isolated accessibility bus")
     Atspi.init()
+    address = bus.get_object("org.a11y.Bus", "/org/a11y/bus").GetAddress(dbus_interface="org.a11y.Bus")
+    accessibility_bus = dbus.bus.BusConnection(str(address))
+    # GTK 4.14's root GetChildAtIndex can return an unmapped window when the
+    # visible child count changes between calls, then crash on its null path.
+    # Fetch one atomic GetChildren snapshot instead. libatspi's reference
+    # factory wraps those real bus/path pairs in its usual cached GI proxies.
+    from gi import _gi
+    atspi_library = ctypes.CDLL("libatspi.so.0")
+    accessible_ref = atspi_library._atspi_ref_accessible
+    accessible_ref.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+    accessible_ref.restype = ctypes.c_void_p
+
+    def root_children(app):
+        proxy = accessibility_bus.get_object(app.app.bus_name, app.path)
+        refs = proxy.GetChildren(dbus_interface="org.a11y.atspi.Accessible", timeout=2)
+        result = []
+        for name, path in refs:
+            pointer = accessible_ref(str(name).encode(), str(path).encode())
+            if pointer:
+                result.append(_gi.pygobject_new_full(pointer, True))
+        return result
 
     def spawn(*args):
         log = (root / f"app-{len(processes)}.log").open("w")
@@ -325,12 +346,11 @@ def worker(root, binary, edge_only=False, ux_only=False, reading_only=False, rec
             try:
                 app = desktop.get_child_at_index(i)
                 if app and app.get_process_id() in [p.pid for p in processes if p.poll() is None]:
-                    for j in range(app.get_child_count()):
-                        window = app.get_child_at_index(j)
+                    for window in root_children(app):
                         if window and window.get_state_set().contains(Atspi.StateType.SHOWING):
                             window_titles[hash(window)] = window.get_name()
                             result.append(window)
-            except GLib.Error:
+            except (GLib.Error, dbus.exceptions.DBusException):
                 # The registry can retain a proxy after its process has exited.
                 # One dead application must not hide windows of the next one.
                 continue

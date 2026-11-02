@@ -45,7 +45,7 @@ jobs:
       - name: Install build and test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libssl-dev dpkg-dev desktop-file-utils bubblewrap xvfb xauth dbus-daemon python3-gi python3-dbus gir1.2-atspi-2.0 gir1.2-gtk-3.0 gir1.2-gtk-4.0 at-spi2-core libxtst6 maim
+          sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libssl-dev dpkg-dev desktop-file-utils bubblewrap xvfb xauth dbus-daemon python3-gi python3-dbus gir1.2-atspi-2.0 gir1.2-gtk-3.0 gir1.2-gtk-4.0 at-spi2-core libxtst6 maim fonts-noto-cjk
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal

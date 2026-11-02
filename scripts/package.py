@@ -81,7 +81,7 @@ Architecture: {arch}
 Maintainer: SnapTranslate contributors <noreply@users.noreply.github.com>
 Installed-Size: {installed_size}
 Depends: {dependencies}, ca-certificates, xdg-desktop-portal
-Recommends: maim, desktop-file-utils, hicolor-icon-theme, xdg-desktop-portal-gtk | xdg-desktop-portal-gnome | xdg-desktop-portal-kde
+Recommends: maim, fonts-noto-cjk, desktop-file-utils, hicolor-icon-theme, xdg-desktop-portal-gtk | xdg-desktop-portal-gnome | xdg-desktop-portal-kde
 Suggests: grim, slurp
 Description: Native screenshot translation application
  Select a region, translate its text using a configured vision service,

@@ -429,10 +429,7 @@ image.savev(sys.argv[1], 'png', [], [])
         wait_for(lambda: result, "read actual X11 clipboard")
         return result[0] or ""
 
-    def replace_text(window, label, value, masked=False):
-        node = wait_for(lambda: input_node(window, label), f"find input {label}")
-        # Focus and paste through GTK's real input path. Some older AT-SPI
-        # bridges report success for set_text_contents without updating Entry.
+    def focus_input(window, node):
         x_events(title=window.get_name())
         try:
             Atspi.Component.scroll_to(node, Atspi.ScrollType.ANYWHERE)
@@ -441,14 +438,31 @@ image.savev(sys.argv[1], 'png', [], [])
             focused = False
         if not focused:
             pointer(window, node)
+        settle()
+
+    def entry_text(window, label):
+        node = wait_for(lambda: input_node(window, label), f"find input {label}")
+        focus_input(window, node)
+        # GTK 4.14 can expose EditableText without implementing Text.get_text.
+        # Read through the real selection/clipboard instead of trusting that API.
+        sentinel = "private-input-copy-sentinel"
+        clipboard.set(sentinel)
+        x_events(title=window.get_name(), keys=[(0xffe3, "a"), (0xffe3, "c")])
+        settle(.2)
+        value = clipboard_text()
+        return "" if value == sentinel else value
+
+    def replace_text(window, label, value, masked=False):
+        node = wait_for(lambda: input_node(window, label), f"find input {label}")
+        focus_input(window, node)
         clipboard.set(value)
+        chords = [(0xffe3, "a"), (0xffe3, "v")] if value else [(0xffe3, "a"), (0xff08,)]
+        x_events(title=window.get_name(), keys=chords)
         settle()
-        x_events(title=window.get_name(), keys=[(0xffe3, "a"), (0xffe3, "v")])
-        if masked:
-            wait_for(lambda: Atspi.Text.get_character_count(node) > 0, f"masked input {label} receives fixture text")
-        else:
-            wait_for(lambda: node_text(node) == value, f"input {label} receives fixture text")
-        settle()
+        if not masked:
+            wait_for(lambda: entry_text(window, label) == value, f"input {label} receives fixture text")
+        # Password contents intentionally remain unreadable. Recovery tests verify
+        # the exact synthetic key in the subsequent local HTTP Authorization header.
 
     def choose_language(window, index):
         node = wait_for(lambda: named(window, "目标语言"), "language selector")
@@ -598,7 +612,7 @@ image.savev(sys.argv[1], 'png', [], [])
         wait_for(lambda: "模型名称不能为空" in text(settings), "invalid input has actionable validation")
         require(config_path.read_bytes() == saved_config, "invalid settings never overwrite the saved configuration")
         click(settings, "取消修改")
-        wait_for(lambda: node_text(input_node(settings, "模型名称")) == "deepseek-flash", "cancel restores model")
+        wait_for(lambda: entry_text(settings, "模型名称") == "deepseek-flash", "cancel restores model")
         credentials = config / "credentials.toml"
         saved_key = credentials.read_bytes()
         click(settings, "删除密钥")
@@ -617,7 +631,7 @@ image.savev(sys.argv[1], 'png', [], [])
         wait_for(lambda: not windows(), "discard closes settings")
         command()
         settings = wait_for(lambda: find_window("DeepSeek API Key"), "reopen persisted settings")
-        require(node_text(input_node(settings, "模型名称")) == "deepseek-flash", "discarded draft does not survive reopening")
+        require(entry_text(settings, "模型名称") == "deepseek-flash", "discarded draft does not survive reopening")
         require(tomllib.loads(config_path.read_text())["target_language"] == "fr", "saved custom language survives reopening")
         require(config_path.read_bytes() == saved_config and credentials.read_bytes() == saved_key, "discard leaves both stores unchanged")
         close(settings)

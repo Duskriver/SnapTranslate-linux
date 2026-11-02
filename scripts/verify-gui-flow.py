@@ -382,7 +382,13 @@ def worker(root, binary, edge_only=False, ux_only=False, reading_only=False, rec
 
     def visible_toast_text(window):
         # Inspect the transient Toast itself, not the persistent status label.
-        return "\n".join(text(node.get_parent()) for node in walk(window) if node.get_name() == "Dismiss" and node.get_state_set().contains(Atspi.StateType.SHOWING))
+        # libadwaita 1.5 gives its close button no accessible name; newer
+        # versions label it "Dismiss". Both expose an actionable push button.
+        return "\n".join(text(node.get_parent()) for node in walk(window)
+                         if node.get_role() == Atspi.Role.PUSH_BUTTON
+                         and node.get_name() in ("Dismiss", "")
+                         and node.get_action_iface()
+                         and node.get_state_set().contains(Atspi.StateType.SHOWING))
 
     def node_text(node):
         return Atspi.Text.get_text(node, 0, -1)

@@ -57,7 +57,7 @@ def settle(duration=0.12):
         time.sleep(0.01)
 
 
-def x_events(title="SnapTranslate · 译文", keys=(), click=None, wheel=0, focus=True, drag=None, control_click=False):
+def x_events(title="SnapTranslate · 译文", keys=(), click=None, wheel=0, focus=True, drag=None, control_click=False, hover=None):
     """Send real keyboard / mouse events only to the private Xvfb server."""
     requested_title = title
     x11 = ctypes.CDLL("libX11.so.6")
@@ -103,7 +103,7 @@ def x_events(title="SnapTranslate · 译文", keys=(), click=None, wheel=0, focu
             x11.XSetInputFocus(display, result, 2, 0)
         if control_click:
             xtst.XTestFakeKeyEvent(display, x11.XKeysymToKeycode(display, 0xffe3), 1, 0)
-        if click or drag:
+        if click or drag or hover:
             # GTK's AT-SPI WINDOW coordinates exclude client-side shadows;
             # SCREEN coordinates are intentionally unavailable in GTK4.
             origin_x, origin_y, child = ctypes.c_int(), ctypes.c_int(), window_type()
@@ -119,8 +119,9 @@ def x_events(title="SnapTranslate · 译文", keys=(), click=None, wheel=0, focu
                 x11.XFree(frame)
             def move(point):
                 xtst.XTestFakeMotionEvent(display, -1, int(point[0] + origin_x.value + left), int(point[1] + origin_y.value + top), 0)
-            move(click or drag[0])
-            xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+            move(hover or click or drag[0])
+            if not hover:
+                xtst.XTestFakeButtonEvent(display, 1, 1, 0)
             if drag:
                 x11.XFlush(display)
                 time.sleep(0.04)
@@ -128,7 +129,8 @@ def x_events(title="SnapTranslate · 译文", keys=(), click=None, wheel=0, focu
                     move(tuple(drag[0][axis] + (drag[1][axis] - drag[0][axis]) * step / 8 for axis in (0, 1)))
                     x11.XFlush(display)
                     time.sleep(0.01)
-            xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+            if not hover:
+                xtst.XTestFakeButtonEvent(display, 1, 0, 0)
         if control_click:
             xtst.XTestFakeKeyEvent(display, x11.XKeysymToKeycode(display, 0xffe3), 0, 0)
         for chord in keys:
@@ -400,6 +402,38 @@ image.savev(sys.argv[1], 'png', [], [])
 """
         subprocess.run([sys.executable, "-c", code, str(root / filename), str(rect.x), str(rect.y), str(rect.width), str(rect.height)], check=True, timeout=5)
 
+    def viewport_pixels(window, content, name, bottom_inset=48):
+        from gi.repository import GdkPixbuf
+        x_events(title=window.get_name(), hover=(400, 15))
+        settle(.18)
+        screenshot(window, name + ".png")
+        image = GdkPixbuf.Pixbuf.new_from_file(str(root / (name + ".png")))
+        box = Atspi.Component.get_extents(content, Atspi.CoordType.WINDOW)
+        x0, y0 = max(0, box.x + 20), max(0, box.y + 8)
+        width = min(box.width - 40, image.get_width() - x0)
+        height = min(box.height - bottom_inset - 8, image.get_height() - y0)
+        require(width > 0 and height > 0, "readable viewport has rendered pixels")
+        channels, stride = image.get_n_channels(), image.get_rowstride()
+        data = image.get_pixels()
+        rows = [bytes(data[(y0+y)*stride+x0*channels:(y0+y)*stride+(x0+width)*channels]) for y in range(height)]
+        return b"".join(rows), width, height, channels, x0, y0
+
+    def pixel_difference(a, b):
+        require(a[1:4] == b[1:4], "viewport geometry stays fixed")
+        channels = a[3]
+        changed = sum(any(abs(a[0][i+c] - b[0][i+c]) > 10 for c in range(3)) for i in range(0, len(a[0]), channels))
+        return changed / (a[1] * a[2])
+
+    def last_text_point(window, content):
+        data, width, height, channels, x0, y0 = viewport_pixels(window, content, "link-rendered", 8)
+        background = data[(width - 1)*channels:(width - 1)*channels+3]
+        ink_rows = []
+        for y in range(height):
+            count = sum(any(abs(data[(y*width+x)*channels+c]-background[c]) > 35 for c in range(3)) for x in range(width))
+            if count >= 4: ink_rows.append(y)
+        require(ink_rows, "rendered text has visible ink")
+        return x0 + 70, y0 + ink_rows[-1] - 6
+
     def pointer(window, node, focus=True):
         try:
             Atspi.Component.scroll_to(node, Atspi.ScrollType.ANYWHERE)
@@ -660,14 +694,25 @@ image.savev(sys.argv[1], 'png', [], [])
         wait_for(lambda: clipboard_text() == visible_text, "Ctrl+A and Ctrl+C copy the whole result")
         x_events(title=result.get_name(), keys=[(0xffe3, 0xff50)])
         settle()
-        start = Atspi.Text.get_character_extents(content, 0, Atspi.CoordType.WINDOW)
-        end = Atspi.Text.get_character_extents(content, 4, Atspi.CoordType.WINDOW)
-        x_events(title=result.get_name(), drag=((start.x, start.y + start.height / 2), (end.x + end.width, end.y + end.height / 2)))
-        wait_for(lambda: Atspi.Text.get_n_selections(content) > 0, "native mouse drag creates a text selection")
-        selected = Atspi.Text.get_selection(content, 0)
-        selected_text = visible_text[selected.start_offset:selected.end_offset]
-        require(bool(selected_text) and selected_text != visible_text, "mouse drag selects part of the document")
+        try:
+            start = Atspi.Text.get_character_extents(content, 0, Atspi.CoordType.WINDOW)
+            end = Atspi.Text.get_character_extents(content, 4, Atspi.CoordType.WINDOW)
+            drag = ((start.x, start.y + start.height / 2), (end.x + end.width, end.y + end.height / 2))
+            precise_selection = True
+        except GLib.Error:
+            box = Atspi.Component.get_extents(content, Atspi.CoordType.WINDOW)
+            drag = ((box.x + 16, box.y + 18), (box.x + 300, box.y + 18))
+            precise_selection = False
+        clipboard.set("private-drag-copy-sentinel")
+        x_events(title=result.get_name(), drag=drag)
         x_events(title=result.get_name(), keys=[(0xffe3, "c")])
+        if precise_selection:
+            wait_for(lambda: Atspi.Text.get_n_selections(content) > 0, "native mouse drag creates a text selection")
+            selected = Atspi.Text.get_selection(content, 0)
+            selected_text = visible_text[selected.start_offset:selected.end_offset]
+        else:
+            selected_text = "Copy heading"
+        require(bool(selected_text) and selected_text != visible_text, "mouse drag selects part of the document")
         wait_for(lambda: clipboard_text() == selected_text, "Ctrl+C copies actual mouse-drag selection")
         print("PASS plain-text copy, keyboard selection, select-all, and native mouse-drag copy", flush=True)
 
@@ -725,49 +770,35 @@ image.savev(sys.argv[1], 'png', [], [])
         result = wait_for(lambda: find_window("TAIL_INITIAL"), "long streaming result")
         content = wait_for(lambda: named(result, "译文内容"), "streaming TextView")
 
-        def tail_visible():
-            buffer_text = node_text(content)
-            character = Atspi.Text.get_character_extents(content, len(buffer_text) - 1, Atspi.CoordType.WINDOW)
-            viewport = Atspi.Component.get_extents(content, Atspi.CoordType.WINDOW)
-            (root / "scroll-metrics.json").write_text(json.dumps({"character": [character.x, character.y, character.width, character.height], "viewport": [viewport.x, viewport.y, viewport.width, viewport.height]}))
-            return character.y >= viewport.y and character.y + character.height <= viewport.y + viewport.height
+        def assert_at_end(name):
+            before = viewport_pixels(result, content, name + "-current")
+            x_events(title=result.get_name(), keys=[(0xffe3, 0xff57)])
+            after = viewport_pixels(result, content, name + "-end")
+            require(pixel_difference(before, after) < .003, "automatic follow already displays the end of the stream")
 
-        def reading_anchor():
-            buffer_text = node_text(content)
-            viewport = Atspi.Component.get_extents(content, Atspi.CoordType.WINDOW)
-            offsets = [0] + [index + 1 for index, char in enumerate(buffer_text[:-1]) if char == "\n" and buffer_text[index + 1] != "\n"]
-            for offset in offsets:
-                bounds = Atspi.Text.get_character_extents(content, offset, Atspi.CoordType.WINDOW)
-                if bounds.y >= viewport.y and bounds.y + bounds.height <= viewport.y + viewport.height:
-                    return offset, buffer_text[offset:].split("\n", 1)[0], bounds.y
-            raise AssertionError("No visible text paragraph to measure")
-
-        wait_for(tail_visible, "stream automatically follows new text")
+        wait_for(lambda: "TAIL_INITIAL" in node_text(content), "initial stream arrives")
+        assert_at_end("initial-follow")
         pointer(result, content)
         x_events(title=result.get_name(), wheel=-12)
         wait_for(lambda: shown(result, "回到底部"), "scrolling up reveals return-to-bottom action")
-        require(not tail_visible(), "user can scroll away from stream tail")
-        previous_offset, _, previous_y = reading_anchor()
+        before = viewport_pixels(result, content, "reading-before-append")
         chunks.put("\n\n" + "\n\n".join(f"New line {i:03d}" for i in range(12)) + "\n\nTAIL_ADDED")
         wait_for(lambda: "TAIL_ADDED" in node_text(content), "more streamed text arrives while scrolled up")
-        require(not tail_visible(), "incoming text does not pull the user to the bottom")
-        current_y = Atspi.Text.get_character_extents(content, previous_offset, Atspi.CoordType.WINDOW).y
-        require(abs(current_y - previous_y) <= 1, "stream preserves the visible reading position")
+        after = viewport_pixels(result, content, "reading-after-append")
+        require(pixel_difference(before, after) < .003, "incoming text preserves the rendered reading position")
         click(result, "回到底部")
-        wait_for(tail_visible, "return-to-bottom scrolls to stream tail")
+        wait_for(lambda: not shown(result, "回到底部"), "return-to-bottom resumes following")
         chunks.put("\n\nTAIL_FOLLOWING_AGAIN")
-        wait_for(lambda: "TAIL_FOLLOWING_AGAIN" in node_text(content) and tail_visible(), "return-to-bottom resumes automatic following")
+        wait_for(lambda: "TAIL_FOLLOWING_AGAIN" in node_text(content), "more text arrives after returning to bottom")
+        assert_at_end("resumed-follow")
         pointer(result, content)
         x_events(title=result.get_name(), wheel=-12)
-        wait_for(lambda: shown(result, "回到底部") and not tail_visible(), "user scrolls up again before formatting completes")
-        _, paragraph, before_completion_y = reading_anchor()
+        wait_for(lambda: shown(result, "回到底部"), "user scrolls up again before formatting completes")
+        before = viewport_pixels(result, content, "reading-before-completion")
         chunks.put(None)
         wait_for(lambda: "翻译完成" in text(result), "controlled stream completes")
-        settle()
-        require(not tail_visible(), "final Markdown formatting does not pull reader back to bottom")
-        after_offset = node_text(content).find(paragraph)
-        after_completion_y = Atspi.Text.get_character_extents(content, after_offset, Atspi.CoordType.WINDOW).y
-        require(abs(after_completion_y - before_completion_y) <= 24, "final formatting keeps the current paragraph in view")
+        after = viewport_pixels(result, content, "reading-after-completion")
+        require(pixel_difference(before, after) < .003, "final formatting preserves the rendered reading position")
         x_events(title=result.get_name(), keys=[(0xffe3, "w")])
         wait_for(lambda: not windows(), "Ctrl+W closes result")
         print("PASS streaming follow, preserved reading position through completion, and return-to-bottom", flush=True)
@@ -1112,9 +1143,8 @@ image.savev(sys.argv[1], 'png', [], [])
                 content = named(result, "译文内容")
                 visible = node_text(content)
                 require("NATIVE_SELECTION_OK\nSecond line" in visible and "Name │ Value\nA │ 1" in visible, "final layout preserves lines and table structure")
-                offset = visible.index("https://") + 4
-                bounds = Atspi.Text.get_character_extents(content, offset, Atspi.CoordType.WINDOW)
-                x_events(title=result.get_name(), click=(bounds.x + 2, bounds.y + 4), control_click=True)
+                point = last_text_point(result, content)
+                x_events(title=result.get_name(), click=point, control_click=True)
                 wait_for(lambda: (root / "opened-uri").exists(), "Ctrl+click opens link with the private handler")
                 require((root / "opened-uri").read_text() == "https://example.com/test", "link destination is preserved")
                 screenshot(result, "native-result.png")

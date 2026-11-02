@@ -225,11 +225,8 @@ impl ResultPanel {
             let Some(view) = weak_view.upgrade() else {
                 return;
             };
-            let (x, y) = view.window_to_buffer_coords(
-                gtk4::TextWindowType::Text,
-                x as i32,
-                y as i32 + view.top_margin(),
-            );
+            let (x, y) =
+                view.window_to_buffer_coords(gtk4::TextWindowType::Widget, x as i32, y as i32);
             let Some(iter) = view.iter_at_location(x, y) else {
                 return;
             };
